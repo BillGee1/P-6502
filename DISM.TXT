@@ -1,0 +1,1131 @@
+PROGRAM DISM(INFILE, OUTFILE);
+
+(* P-CODE DISASSEMBLER
+
+Usage: RUN DISM <P-CODE FILE> [<DISASSEMBLED OUTPUT>]
+
+If disassembled output file is not specified, the output goes to
+the console.
+
+-----------------------------------------------------------------------
+
+Copyright (C) 2021 DEI Research.  All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, duplicate, modify, merge, publish, distribute, and;
+sublicense copies of this Software, and to permit persons to whom the;
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software and proper attribution
+is given.
+
+This code, or any part thereof, including any derivation, MAY NOT be
+incorporated into any package or device intended for sale unless written
+permission to do so has been granted by the copyright holder.
+
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+While it is believed that the code will perform as intended, the user
+assumes all risk in connection with the use of this software.
+
+*)
+
+  CONST
+    ISPOP = 0;
+    ISPUSH = 1;
+
+    ISBYTE = 0;
+    ISINTEGER = 1;
+    ISSET = 2;
+    ISALFA = 3;
+
+    ISEQ = 0;
+    ISNE = 1;
+    ISLT = 2;
+    ISGT = 3;
+    ISLE = 4;
+    ISGE = 5;
+
+  VAR
+    INFILE : FILE OF BYTE;
+    OUTFILE : FILE OF CHAR;
+
+    OPCODE : BYTE;
+    MODE : BYTE;
+    BYTE1 : BYTE;
+    BYTE2 : BYTE;
+
+    ADDRLOW : BYTE;
+    ADDRHIGH : BYTE;
+    LENLOW : BYTE;
+    LENHIGH : BYTE;
+
+    QUIT : CHAR;
+
+  PROCEDURE HEXNYBBLE(N:INTEGER);
+
+    BEGIN
+      IF N IN [0..9]
+        THEN
+          WRITE(OUTFILE, CHR(N+ORD("0")))
+        ELSE
+          WRITE(OUTFILE, CHR(N-10+ORD("A")))
+    END;  (* HEXNYBBLE *)
+
+  PROCEDURE HEXBYTE(N:INTEGER);
+
+    BEGIN
+      HEXNYBBLE(N DIV 16);
+      HEXNYBBLE(N - N DIV 16 * 16)
+    END;  (* HEXBYTE *)
+
+  FUNCTION MAKEINT(HIGH:INTEGER, LOW:INTEGER) : INTEGER;
+  (* COMBINE TWO BYTES INTO AN INTEGER *)
+
+    VAR
+      I : INTEGER;
+
+    BEGIN
+      IF HIGH < 128
+        THEN
+          (* Positive *)
+          MAKEINT := HIGH * 256 + LOW
+        ELSE BEGIN
+          (* Negative *)
+          HIGH := 255 - HIGH;
+          LOW := 255 - LOW;
+          I := HIGH * 256 + LOW + 1;
+          MAKEINT := -I
+        END
+    END;  (* MAKEINT *)
+
+  PROCEDURE READWORD;
+
+    BEGIN
+      READ(INFILE, BYTE1);
+      READ(INFILE, BYTE2)
+    END;  (* READWORD *)
+
+  PROCEDURE READINSTRUCTION;
+
+    BEGIN
+      READ(INFILE, OPCODE);
+      READ(INFILE, MODE);
+      READ(INFILE, BYTE1);
+      READ(INFILE, BYTE2);
+      IF ADDRLOW < 252
+        THEN
+          ADDRLOW := ADDRLOW + 4
+        ELSE BEGIN
+          ADDRHIGH := ADDRHIGH + 1;
+          ADDRLOW := 0
+        END
+    END;  (* READINSTRUCTION *)
+
+  PROCEDURE NOPADINTEGER(NUM : INTEGER);
+  (* WRITE AN INTEGER WITH NO PADDING *)
+
+    VAR
+      POWER : INTEGER;
+      I : INTEGER;
+      N : INTEGER;
+      LEADING : BOOLEAN;
+
+    BEGIN
+      LEADING := TRUE;
+      N := NUM;
+      IF N < 0
+        THEN BEGIN
+          WRITE(OUTFILE, "-");
+          N := -N
+        END;
+      POWER := 10000;
+      REPEAT
+        IF N >= POWER
+          THEN BEGIN
+            LEADING := FALSE;
+            I := N DIV POWER;
+            N := N - I * POWER;
+            WRITE(OUTFILE, I:1)
+          END
+          ELSE
+            IF NOT LEADING
+              THEN
+                WRITE(OUTFILE, "0");
+        POWER := POWER DIV 10
+      UNTIL POWER < 10;
+      WRITE(OUTFILE, N:1)
+    END;  (* NOPADINTEGER *)
+
+  PROCEDURE READHEADER;
+
+    VAR
+      COUNT : INTEGER;
+      I : INTEGER;
+      VAL : INTEGER;
+
+    BEGIN
+      READWORD;
+      WRITE(OUTFILE, "Highest opcode used: $");
+      HEXBYTE(BYTE2);
+      WRITELN(OUTFILE);
+      READWORD;
+      LENHIGH := BYTE1;
+      LENLOW := BYTE2;
+      WRITE(OUTFILE, "Image length: $");
+      HEXBYTE(BYTE1);
+      HEXBYTE(BYTE2);
+      WRITELN(OUTFILE);
+      WRITELN(OUTFILE);
+      WRITELN(OUTFILE, "Array subscript table:");
+      WRITELN(OUTFILE);
+      READWORD;
+      COUNT := BYTE2;
+      FOR I := 0 TO COUNT-1 DO
+        BEGIN
+          WRITE(OUTFILE, I:3, ": ");
+          READWORD;
+          VAL := MAKEINT(BYTE1, BYTE2);
+          NOPADINTEGER(VAL);
+          WRITE(OUTFILE, "..");
+          READWORD;
+          VAL := MAKEINT(BYTE1, BYTE2);
+          NOPADINTEGER(VAL);
+          WRITELN(OUTFILE)
+        END;
+      WRITELN(OUTFILE)
+    END;  (* READHEADER *)
+
+  PROCEDURE SHOWFILE;
+
+    BEGIN
+       WRITE(OUTFILE, " (");
+      IF MODE = 1
+        THEN
+          WRITE(OUTFILE, "Input")
+      ELSE IF MODE = 2
+        THEN
+          WRITE(OUTFILE, "Output")
+        ELSE BEGIN
+          WRITE(OUTFILE, "File #");
+          NOPADINTEGER(MODE)
+        END;
+      WRITE(OUTFILE, ")")
+    END;  (* SHOWFILE *)
+
+  PROCEDURE SHOWTARGETADDRESS;
+
+    BEGIN
+      WRITE(OUTFILE, "$");
+      HEXBYTE(BYTE1);
+      HEXBYTE(BYTE2)
+    END;  (* SHOWTARGETADDRESS *)
+
+  PROCEDURE SHOWFFALSETHENJUMP;
+
+    BEGIN
+      WRITE(OUTFILE, "f false then jump ");
+      SHOWTARGETADDRESS
+    END;  (* SHOWFFALSETHENJUMP *)
+
+  PROCEDURE SHOWIFFALSETHENJUMP;
+
+    BEGIN
+      WRITE(OUTFILE, ", i");
+      SHOWFFALSETHENJUMP
+    END;  (* SHOWIFFALSETHENJUMP *)
+
+  PROCEDURE SHOWTYPE(KIND : INTEGER);
+
+    BEGIN
+      CASE KIND OF
+        ISBYTE:
+          WRITE(OUTFILE, "byte");
+        ISINTEGER:
+          WRITE(OUTFILE, "integer");
+        ISSET:
+          WRITE(OUTFILE, "set");
+        ISALFA:
+          WRITE(OUTFILE, "alfa")
+      END
+    END;  (* SHOWTYPE *)
+
+  PROCEDURE SHOWVARIABLE(PUSH : INTEGER; KIND : INTEGER);
+
+    VAR
+      I : INTEGER;
+
+    BEGIN
+      IF PUSH <> 0
+        THEN
+          WRITE(OUTFILE, "Push ")
+        ELSE
+          WRITE(OUTFILE, "Pop ");
+      SHOWTYPE(KIND);
+      IF MODE >= 128
+        THEN BEGIN
+          IF PUSH <> 0
+            THEN
+              WRITE(OUTFILE, " from")
+            ELSE
+              WRITE(OUTFILE, " into");
+          WRITE(OUTFILE, " array");
+          I := MODE - 128
+        END
+        ELSE
+          I := MODE;
+      WRITE(OUTFILE, " at frame");
+      WHILE I > 0 DO
+        BEGIN
+          WRITE(OUTFILE, "^");
+          I := I - 1
+        END;
+      WRITE(OUTFILE, "+");
+      SHOWTARGET
+    END;  (* SHOWVARIABLE *)
+
+  PROCEDURE SHOWCOMPARE(KIND : INTEGER, RELATION : INTEGER);
+
+    BEGIN
+      WRITE(OUTFILE, "Compare ");
+      SHOWTYPE(KIND);
+      WRITE(OUTFILE, "s for ");
+      CASE RELATION OF
+        ISEQ:
+          WRITE(OUTFILE, "=");
+        ISNE:
+          WRITE(OUTFILE, "<>");
+        ISLT:
+          WRITE(OUTFILE, "<");
+        ISGT:
+          WRITE(OUTFILE, ">");
+        ISLE:
+          WRITE(OUTFILE, "<=");
+        ISGE:
+          WRITE(OUTFILE, ">=")
+      END;
+      IF (BYTE1 <> 0) OR (BYTE2 <> 0)
+        THEN
+          SHOWIFFALSETHENJUMP
+    END;  (* SHOWCOMPARE *)
+
+  PROCEDURE U00;
+
+    BEGIN
+      IF MODE = 0
+        THEN
+          WRITE(OUTFILE, "Halt")
+        ELSE
+          WRITE(OUTFILE, "Case variable error")
+    END;  (* U00 *)
+
+  PROCEDURE U01;
+
+    BEGIN
+      WRITE(OUTFILE, "Jump ");
+      SHOWTARGETADDRESS
+    END;  (* U01 *)
+
+  PROCEDURE U02;
+
+    BEGIN
+      IF (BYTE1 = 0) AND (BYTE2 = 0)
+        THEN
+          WRITE(OUTFILE, "Nop")
+        ELSE BEGIN
+          WRITE(OUTFILE, "I");
+          SHOWFFALSETHENJUMP
+        END
+    END;  (* U02 *)
+
+  PROCEDURE U03;
+
+    BEGIN
+      WRITE(OUTFILE, "Finish calling ");
+      SHOWTARGETADDRESS
+    END;  (* U03 *)
+
+  PROCEDURE U04;
+
+    VAR
+      VAL : INTEGER;
+
+    BEGIN
+      IF MODE > 127
+        THEN BEGIN
+          WRITE(OUTFILE, "Call ");
+          SHOWTARGETADDRESS
+        END
+        ELSE
+          IF (BYTE1 = 0) AND (BYTE2 = 0)
+            THEN
+              WRITE(OUTFILE, "Create stack frame")
+            ELSE BEGIN
+              WRITE(OUTFILE, "Reserve ");
+              VAL := MAKEINT(BYTE1, BYTE2);
+              NOPADINTEGER(VAL);
+              WRITE(OUTFILE, " bytes for return value")
+            END
+    END;  (* U04 *)
+
+  PROCEDURE U05;
+
+    BEGIN
+      WRITELN(OUTFILE, "Return")
+    END;  (* U05 *)
+
+  PROCEDURE U06;
+
+    BEGIN
+      WRITE(OUTFILE, "SP := SP ");
+      IF MODE = 0
+        THEN
+          WRITE(OUTFILE, "+")
+        ELSE
+          WRITE(OUTFILE, "-");
+      WRITE(OUTFILE, " ");
+      SHOWTARGETADDRESS
+    END;  (* U06 *)
+
+  PROCEDURE U07;
+
+    VAR
+      BYTES : ARRAY [0..255] OF BYTE;
+      VAL : INTEGER;
+      I : INTEGER;
+      J : INTEGER;
+      AHIGH : BYTE;
+      ALOW : BYTE;
+
+    BEGIN
+      WRITE(OUTFILE, "Push ");
+      IF MODE = 1
+        THEN
+          IF (BYTE2 >= ORD(" ")) AND (BYTE2 <= ORD("~"))
+            THEN 
+              WRITE(OUTFILE, "character ", CHR(34), CHR(BYTE2),
+                  CHR(34))
+            ELSE BEGIN
+              WRITE(OUTFILE, "byte ", CHR(34));
+              HEXBYTE(BYTE2);
+              WRITE(OUTFILE, CHR(34))
+            END
+      ELSE IF MODE = 2
+        THEN
+          IF (BYTE1 >= ORD(" ")) AND (BYTE1 <= ORD("~"))
+              AND (BYTE2 >= ORD(" ")) AND (BYTE2 <= ORD("~"))
+            THEN
+              WRITE(OUTFILE, "string ", CHR(34), CHR(BYTE1),
+                  CHR(BYTE2), CHR(34))
+            ELSE BEGIN
+              WRITE(OUTFILE, "integer ");
+              VAL := MAKEINT(BYTE1, BYTE2);
+              NOPADINTEGER(VAL)
+            END
+        ELSE BEGIN
+          WRITE(OUTFILE, "string ", CHR(34), CHR(BYTE1), CHR(BYTE2));
+          VAL := 0;
+          I := MODE - 2;
+          AHIGH := ADDRHIGH;
+          ALOW := ADDRLOW;
+          WHILE I > 0 DO
+            BEGIN
+              READINSTRUCTION;
+              BYTES[VAL] := OPCODE;
+              BYTES[VAL + 1] := MODE;
+              BYTES[VAL + 2] := BYTE1;
+              BYTES[VAL + 3] := BYTE2;
+              J := 0;
+              WHILE (I > 0) AND (J < 4) DO
+                BEGIN
+                  WRITE(OUTFILE, CHR(BYTES[VAL + J]));
+                  I := I - 1;
+                  J := J + 1
+                END;
+              VAL := VAL + 4
+            END;
+          WRITE(OUTFILE, CHR(34));
+          I := 0;
+          WHILE VAL > 0 DO
+            BEGIN
+              WRITELN(OUTFILE);
+              HEXBYTE(AHIGH);
+              HEXBYTE(ALOW);
+              IF ALOW < 252
+                THEN
+                  ALOW := ALOW + 4
+                ELSE BEGIN
+                  AHIGH := AHIGH + 1;
+                  ALOW := 0
+                END;
+              WRITE(OUTFILE, ":");
+              FOR J := 0 TO 3 DO
+                BEGIN
+                  WRITE(OUTFILE, " ");
+                  HEXBYTE(BYTES[I + J])
+                END;
+              I := I + 4;
+              VAL := VAL - 4
+            END
+        END
+    END;  (* U07 *)
+
+  PROCEDURE U08;
+
+    VAR
+      VAL : INTEGER;
+
+    BEGIN
+      WRITE(OUTFILE, "Determine array index, dim=");
+      VAL := MODE;
+      NOPADINTEGER(VAL);
+      WRITE(OUTFILE, ", element size=");
+      VAL := BYTE1;
+      NOPADINTEGER(VAL);
+      WRITE(OUTFILE, ", range=");
+      VAL := BYTE2;
+      NOPADINTEGER(VAL)
+    END;  (* U08 *)
+
+  PROCEDURE U09;
+
+    BEGIN
+      IF MODE = 0
+        THEN
+          WRITE(OUTFILE, "Not")
+      ELSE IF MODE = 1
+        THEN
+          WRITE(OUTFILE, "And")
+        ELSE
+          WRITE(OUTFILE, "Or");
+      IF (BYTE1 <> 0) OR (BYTE2 <> 0)
+        THEN
+          SHOWIFFALSETHENJUMP
+    END;  (* U09 *)
+
+  PROCEDURE U0B;
+
+    BEGIN
+      IF MODE = 1
+        THEN
+          WRITE(OUTFILE, "Peek")
+      ELSE IF MODE = 2
+        THEN
+          WRITE(OUTFILE, "Poke")
+        ELSE
+          WRITE(OUTFILE, "Call user function")
+    END;  (* U0B *)
+
+  PROCEDURE U0C;
+
+    BEGIN
+      WRITE(OUTFILE, "Eoln");
+      SHOWFILE;
+      IF (BYTE1 <> 0) OR (BYTE2 <> 0)
+        THEN
+          SHOWIFFALSETHENJUMP
+    END;  (* U0C *)
+
+  PROCEDURE U0D;
+
+    BEGIN
+      WRITE(OUTFILE, "Eof");
+      SHOWFILE;
+      IF (BYTE1 <> 0) OR (BYTE2 <> 0)
+        THEN
+          SHOWIFFALSETHENJUMP
+    END;  (* U0D *)
+
+  PROCEDURE U0E;
+
+    BEGIN
+      WRITE(OUTFILE, "Rewrite");
+      SHOWFILE
+    END;  (* U0E *)
+
+  PROCEDURE U0F;
+
+    BEGIN
+      WRITE(OUTFILE, "Reset");
+      SHOWFILE
+    END;  (* U0F *)
+
+  PROCEDURE U10;
+
+    BEGIN
+      SHOWCOMPARE(ISBYTE, ISEQ)
+    END;  (* U10 *)
+
+  PROCEDURE U11;
+
+    BEGIN
+      SHOWCOMPARE(ISBYTE, ISNE)
+    END;  (* U11 *)
+
+  PROCEDURE U16;
+
+    BEGIN
+      SHOWVARIABLE(ISPUSH, ISBYTE)
+    END;  (* U16 *)
+
+  PROCEDURE U17;
+
+    BEGIN
+      SHOWVARIABLE(ISPOP, ISBYTE)
+    END;  (* U17 *)
+
+  PROCEDURE U18;
+
+    BEGIN
+      WRITE(OUTFILE, "Convert byte to integer")
+    END;  (* U18 *)
+
+  PROCEDURE U19;
+
+    BEGIN
+      WRITE(OUTFILE, "Convert integer to byte")
+    END;  (* U19 *)
+
+  PROCEDURE U1A;
+
+    BEGIN
+      WRITE(OUTFILE, "Convert ");
+      IF MODE = 0
+        THEN
+          WRITE(OUTFILE, "character to integer")
+        ELSE
+          WRITE(OUTFILE, "integer to character")
+    END;  (* U1A *)
+
+  PROCEDURE U1B;
+
+    VAR
+      VAL : INTEGER;
+
+    BEGIN
+      IF MODE = 0
+        THEN
+          WRITE(OUTFILE, "Succ")
+      ELSE IF MODE < 128
+        THEN
+          WRITE(OUTFILE, "Pred")
+        ELSE
+          WRITE(OUTFILE, "Bounds check");
+      WRITE(OUTFILE, ", lower bound=");
+      VAL := BYTE1;
+      NOPADINTEGER(VAL);
+      WRITE(OUTFILE, ", upper bound=");
+      VAL := BYTE2;
+      NOPADINTEGER(VAL)
+    END;  (* U1B *)
+
+  PROCEDURE U1C;
+
+    BEGIN
+      WRITE(OUTFILE, "Writeln");
+      SHOWFILE
+    END;  (* U1C *)
+
+  PROCEDURE U1D;
+
+    BEGIN
+      WRITE(OUTFILE, "Readln");
+      SHOWFILE
+    END;  (* U1D *)
+
+  PROCEDURE U1E;
+
+    BEGIN
+      WRITE(OUTFILE, "Write string");
+      SHOWFILE;
+      WRITE(OUTFILE, ", field width=");
+      NOPADINTEGER(BYTE1);
+      WRITE(OUTFILE, ", string length=");
+      NOPADINTEGER(BYTE2)
+    END;  (* U1E *)
+
+  PROCEDURE U1F;
+
+    BEGIN
+      WRITE(OUTFILE, "Read");
+      SHOWFILE;
+      IF BYTE2 = 0
+        THEN
+          WRITE(OUTFILE, " byte")
+        ELSE
+          WRITE(OUTFILE, " character")
+    END;  (* U1F *)
+
+  PROCEDURE U20;
+
+    BEGIN
+      SHOWCOMPARE(ISINTEGER, ISEQ)
+    END;  (* U20 *)
+
+  PROCEDURE U21;
+
+    BEGIN
+      SHOWCOMPARE(ISINTEGER, ISNE)
+    END;  (* U21 *)
+
+  PROCEDURE U22;
+
+    BEGIN
+      SHOWCOMPARE(ISINTEGER, ISLT)
+    END;  (* U22 *)
+
+  PROCEDURE U23;
+
+    BEGIN
+      SHOWCOMPARE(ISINTEGER, ISGT)
+    END;  (* U23 *)
+
+  PROCEDURE U24;
+
+    BEGIN
+      SHOWCOMPARE(ISINTEGER, ISLE)
+    END;  (* U24 *)
+
+  PROCEDURE U25;
+
+    BEGIN
+      SHOWCOMPARE(ISINTEGER, ISGE)
+    END;  (* U25 *)
+
+  PROCEDURE U26;
+
+    BEGIN
+      SHOWVARIABLE(ISPUSH, ISINTEGER)
+    END;  (* U26 *)
+
+  PROCEDURE U27;
+
+    BEGIN
+      SHOWVARIABLE(ISPOP, ISINTEGER)
+    END;  (* U27 *)
+
+  PROCEDURE U28;
+
+    VAR
+      VAL : INTEGER;
+
+    BEGIN
+      WRITE(OUTFILE, "Add ");
+      IF MODE <> 0
+        THEN BEGIN
+          VAL := MAKEINT(BYTE1, BYTE2);
+          NOPADINTEGER(VAL);
+          WRITE(OUTFILE, " to ")
+        END;
+      WRITE(OUTFILE, "integer");
+      IF MODE = 0
+        THEN
+          WRITE(OUTFILE, "s")
+    END;  (* U28 *)
+
+  PROCEDURE U29;
+
+    VAR
+      VAL : INTEGER;
+
+    BEGIN
+      WRITE(OUTFILE, "Subtract ");
+      IF MODE <> 0
+        THEN BEGIN
+          VAL := MAKEINT(BYTE1, BYTE2);
+          NOPADINTEGER(VAL);
+          WRITE(OUTFILE, " from ")
+        END;
+      WRITE(OUTFILE, "integer");
+      IF MODE = 0
+        THEN
+          WRITE(OUTFILE, "s")
+    END;  (* U29 *)
+
+  PROCEDURE U2A;
+
+    VAR
+      VAL : INTEGER;
+
+    BEGIN
+      WRITE(OUTFILE, "Multiply integer");
+      IF MODE <> 0
+        THEN BEGIN
+          WRITE(OUTFILE, " by ");
+          VAL := MAKEINT(BYTE1, BYTE2);
+          NOPADINTEGER(VAL)
+        END
+        ELSE
+          WRITE(OUTFILE, "s")
+    END;  (* U2A *)
+
+  PROCEDURE U2B;
+
+    VAR
+      VAL : INTEGER;
+
+    BEGIN
+      WRITE(OUTFILE, "Divide ");
+      IF MODE <> 0
+        THEN BEGIN
+          VAL := MAKEINT(BYTE1, BYTE2);
+          NOPADINTEGER(VAL);
+          WRITE(OUTFILE, " into ")
+        END;
+      WRITE(OUTFILE, "integer");
+      IF MODE = 0
+        THEN
+          WRITE(OUTFILE, "s")
+    END;  (* U2B *)
+
+  PROCEDURE U2C;
+
+    BEGIN
+      WRITE(OUTFILE, "Negate integer")
+    END;  (* U2C *)
+
+  PROCEDURE U2D;
+
+    BEGIN
+      WRITE(OUTFILE, "Odd");
+      IF (BYTE1 <> 0) OR (BYTE2 <> 0)
+        THEN
+          SHOWIFFALSETHENJUMP
+    END;  (* U2D *)
+
+  PROCEDURE U2E;
+
+    VAR
+      VAL : INTEGER;
+
+    BEGIN
+      WRITE(OUTFILE, "Write");
+      SHOWFILE;
+      IF BYTE2 = 0
+        THEN
+          WRITE(OUTFILE, " binary")
+        ELSE
+          WRITE(OUTFILE, " ASCII");
+      WRITE(OUTFILE, " integer");
+      IF BYTE2 <> 0
+        THEN BEGIN
+          WRITE(OUTFILE, ", field width=");
+          VAL := BYTE1;
+          NOPADINTEGER(VAL)
+        END
+    END;  (* U2E *)
+
+  PROCEDURE U2F;
+
+    BEGIN
+      WRITE(OUTFILE, "Read");
+      SHOWFILE;
+      IF BYTE2 = 0
+        THEN
+          WRITE(OUTFILE, " binary")
+        ELSE
+          WRITE(OUTFILE, " ASCII");
+      WRITE(OUTFILE, " integer")
+    END;  (* U2F *)
+
+  PROCEDURE U30;
+
+    BEGIN
+      SHOWVARIABLE(ISPUSH, ISSET)
+    END;  (* U30 *)
+
+  PROCEDURE U31;
+
+    BEGIN
+      SHOWVARIABLE(ISPOP, ISSET)
+    END;  (* U31 *)
+
+  PROCEDURE U32;
+
+    VAR
+      VAL : INTEGER;
+
+    BEGIN
+      IF MODE = 0
+        THEN
+          IF BYTE2 = 0
+            THEN
+              WRITE(OUTFILE, "Create empty set")
+            ELSE BEGIN
+              WRITE(OUTFILE, "Create set containing member ");
+              VAL := BYTE2;
+              NOPADINTEGER(VAL)
+            END
+        ELSE BEGIN
+          WRITE(OUTFILE, "Add member ");
+          VAL := BYTE2;
+          NOPADINTEGER(VAL);
+          WRITE(OUTFILE, " to set")
+        END
+    END;  (* U32 *)
+
+  PROCEDURE U33;
+
+    BEGIN
+      WRITE(OUTFILE, "Set ");
+      IF MODE = 0
+        THEN
+          WRITE(OUTFILE, "union")
+      ELSE IF MODE < 128
+        THEN
+          WRITE(OUTFILE, "difference")
+        ELSE
+          WRITE(OUTFILE, "intersection")
+    END;  (* U33 *)
+
+  PROCEDURE U34;
+
+    BEGIN
+      WRITE(OUTFILE, "Determine set membership");
+      IF (BYTE1 <> 0) OR (BYTE2 <> 0)
+        THEN
+          SHOWIFFALSETHENJUMP
+    END;  (* U34 *)
+
+  PROCEDURE U35;
+
+    BEGIN
+      WRITE(OUTFILE, "Compare sets for ");
+      IF MODE = 0
+        THEN
+          WRITE(OUTFILE, "=")
+        ELSE
+          WRITE(OUTFILE, "<>");
+      IF (BYTE1 <> 0) OR (BYTE2 <> 0)
+        THEN
+          SHOWIFFALSETHENJUMP
+    END;  (* U35 *)
+
+  PROCEDURE U36;
+
+    BEGIN
+      SHOWCOMPARE(ISALFA, ISEQ)
+    END;  (* U36 *)
+
+  PROCEDURE U37;
+
+    BEGIN
+      SHOWCOMPARE(ISALFA, ISNE)
+    END;  (* U37 *)
+
+  PROCEDURE U38;
+
+    BEGIN
+      SHOWCOMPARE(ISALFA, ISLT)
+    END;  (* U38 *)
+
+  PROCEDURE U39;
+
+    BEGIN
+      SHOWCOMPARE(ISALFA, ISGT)
+    END;  (* U39 *)
+
+  PROCEDURE U3A;
+
+    BEGIN
+      SHOWCOMPARE(ISALFA, ISLE)
+    END;  (* U3A *)
+
+  PROCEDURE U3B;
+
+    BEGIN
+      SHOWCOMPARE(ISALFA, ISGE)
+    END;  (* U3B *)
+
+  PROCEDURE U3C;
+
+    BEGIN
+      SHOWVARIABLE(ISPUSH, ISALFA)
+    END;  (* U3C *)
+
+  PROCEDURE U3D;
+
+    BEGIN
+      SHOWVARIABLE(ISPOP, ISALFA)
+    END;  (* U3D *)
+
+  PROCEDURE U3E;
+
+    BEGIN
+      WRITE(OUTFILE, "*** USED BY THE COMPILER ***")
+    END;  (* U3E *)
+
+  PROCEDURE DISASSEMBLE;
+
+    BEGIN
+      HEXBYTE(ADDRHIGH);
+      HEXBYTE(ADDRLOW);
+      WRITE(OUTFILE, ": ");
+      READINSTRUCTION;
+      HEXBYTE(OPCODE);
+      WRITE(OUTFILE, " ");
+      HEXBYTE(MODE);
+      WRITE(OUTFILE, " ");
+      HEXBYTE(BYTE1);
+      WRITE(OUTFILE, " ");
+      HEXBYTE(BYTE2);
+      WRITE(OUTFILE, " ; ");
+
+      IF OPCODE = 0
+        THEN U00
+      ELSE IF OPCODE = 1
+        THEN U01
+      ELSE IF OPCODE = 2
+        THEN U02
+      ELSE IF OPCODE = 3
+        THEN U03
+      ELSE IF OPCODE = 4
+        THEN U04
+      ELSE IF OPCODE = 5
+        THEN U05
+      ELSE IF OPCODE = 6
+        THEN U06
+      ELSE IF OPCODE = 7
+        THEN U07
+      ELSE IF OPCODE = 8
+        THEN U08
+      ELSE IF OPCODE = 9
+        THEN U09
+      ELSE IF OPCODE = 11
+        THEN U0B
+      ELSE IF OPCODE = 12
+        THEN U0C
+      ELSE IF OPCODE = 13
+        THEN U0D
+      ELSE IF OPCODE = 14
+        THEN U0E
+      ELSE IF OPCODE = 15
+        THEN U0F
+      ELSE IF OPCODE = 16
+        THEN U10
+      ELSE IF OPCODE = 17
+        THEN U11
+      ELSE IF OPCODE = 22
+        THEN U16
+      ELSE IF OPCODE = 23
+        THEN U17
+      ELSE IF OPCODE = 24
+        THEN U18
+      ELSE IF OPCODE = 25
+        THEN U19
+      ELSE IF OPCODE = 26
+        THEN U1A
+      ELSE IF OPCODE = 27
+        THEN U1B
+      ELSE IF OPCODE = 28
+        THEN U1C
+      ELSE IF OPCODE = 29
+        THEN U1D
+      ELSE IF OPCODE = 30
+        THEN U1E
+      ELSE IF OPCODE = 31
+        THEN U1F
+      ELSE IF OPCODE = 32
+        THEN U20
+      ELSE IF OPCODE = 33
+        THEN U21
+      ELSE IF OPCODE = 34
+        THEN U22
+      ELSE IF OPCODE = 35
+        THEN U23
+      ELSE IF OPCODE = 36
+        THEN U24
+      ELSE IF OPCODE = 37
+        THEN U25
+      ELSE IF OPCODE = 38
+        THEN U26
+      ELSE IF OPCODE = 39
+        THEN U27
+      ELSE IF OPCODE = 40
+        THEN U28
+      ELSE IF OPCODE = 41
+        THEN U29
+      ELSE IF OPCODE = 42
+        THEN U2A
+      ELSE IF OPCODE = 43
+        THEN U2B
+      ELSE IF OPCODE = 44
+        THEN U2C
+      ELSE IF OPCODE = 45
+        THEN U2D
+      ELSE IF OPCODE = 46
+        THEN U2E
+      ELSE IF OPCODE = 47
+        THEN U2F
+      ELSE IF OPCODE = 48
+        THEN U30
+      ELSE IF OPCODE = 49
+        THEN U31
+      ELSE IF OPCODE = 50
+        THEN U32
+      ELSE IF OPCODE = 51
+        THEN U33
+      ELSE IF OPCODE = 52
+        THEN U34
+      ELSE IF OPCODE = 53
+        THEN U35
+      ELSE IF OPCODE = 54
+        THEN U36
+      ELSE IF OPCODE = 55
+        THEN U37
+      ELSE IF OPCODE = 56
+        THEN U38
+      ELSE IF OPCODE = 57
+        THEN U39
+      ELSE IF OPCODE = 58
+        THEN U3A
+      ELSE IF OPCODE = 59
+        THEN U3B
+      ELSE IF OPCODE = 60
+        THEN U3C
+      ELSE IF OPCODE = 61
+        THEN U3D
+      ELSE IF OPCODE = 62
+        THEN U3E
+      ELSE BEGIN
+        WRITE(OUTFILE, "Unknown");
+        WRITELN;
+        WRITE("Quit? ");
+        READ(QUIT);
+        IF (QUIT = "Y") OR (QUIT = "y")
+          THEN
+            HALT
+      END;
+
+      WRITELN(OUTFILE);
+    END;  (* DISASSEMBLE *)
+
+  (* MAIN PROGRAM *)
+  BEGIN
+    RESET(INFILE);
+    (*
+    IF EOF(INFILE) <-- IT DOES NOT LET ME DO THIS!
+      THEN BEGIN
+        WRITELN("No file specified.");
+        HALT
+      END;
+    *)
+    REWRITE(OUTFILE);
+    ADDRHIGH := 0;
+    ADDRLOW := 0;
+    READHEADER;
+    REPEAT
+      DISASSEMBLE
+    UNTIL (ADDRHIGH > LENHIGH) OR (ADDRHIGH = LENHIGH) AND
+        (ADDRLOW >= LENLOW)
+  END.
